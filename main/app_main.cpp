@@ -68,34 +68,35 @@ void read_temperature(void *pvParameters)
         ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_chan0_handle, adc_raw, &voltage_mv));
         ESP_LOGI(TAG, "ADC%d Channel[%d] Cali Voltage: %d mV", ADC_UNIT_1 + 1, ADC1_CHANNEL, voltage_mv);
 
+        // Convert the voltage into temperature using Steinhart formula
+
         float resistance = (voltage_mv * SERIESRESISTOR) / (3300 - voltage_mv);
 
-        double steinhart;
-        steinhart = resistance / THERMISTORNOMINAL;       // (R/Ro)
-        steinhart = log(steinhart);                       // ln(R/Ro)
-        steinhart /= BCOEFFICIENT;                        // 1/B * ln(R/Ro)
-        steinhart += 1.0 / (TEMPERATURENOMINAL + 273.15); // + (1/To)
-        steinhart = 1.0 / steinhart;                      // Invert
-        steinhart -= 273.15;                              // Convert to Celcius
+        double temperature;
+        temperature = resistance / THERMISTORNOMINAL;       // (R/Ro)
+        temperature = log(temperature);                       // ln(R/Ro)
+        temperature /= BCOEFFICIENT;                        // 1/B * ln(R/Ro)
+        temperature += 1.0 / (TEMPERATURENOMINAL + 273.15); // + (1/To)
+        temperature = 1.0 / temperature;                      // Invert
+        temperature -= 273.15;                              // Convert to Celcius
 
-        ESP_LOGI(TAG, "Temperature: %f", steinhart);
+        ESP_LOGI(TAG, "Temperature: %f", temperature);
 
-        // Convert the voltage into temperature
+        // Schedule the attribute update so that we can report it from matter thread
 
-        // schedule the attribute update so that we can report it from matter thread
-        // chip::DeviceLayer::SystemLayer().ScheduleLambda([endpoint_id, voltage]()
-        //                                                 {
-        // attribute_t * attribute = attribute::get(endpoint_id,
-        //                                          TemperatureMeasurement::Id,
-        //                                          TemperatureMeasurement::Attributes::MeasuredValue::Id);
+        chip::DeviceLayer::SystemLayer().ScheduleLambda([endpoint_id, voltage]()
+                                                         {
+        attribute_t * attribute = attribute::get(endpoint_id,
+                                                 TemperatureMeasurement::Id,
+                                                 TemperatureMeasurement::Attributes::MeasuredValue::Id);
 
-        // esp_matter_attr_val_t val = esp_matter_invalid(NULL);
-        // attribute::get_val(attribute, &val);
-        // val.val.i16 = static_cast<int16_t>(voltage * 100);
+        esp_matter_attr_val_t val = esp_matter_invalid(NULL);
+        attribute::get_val(attribute, &val);
+        val.val.i16 = static_cast<int16_t>(temperature * 100);
+        
+        attribute::update(endpoint_id, TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id, &val); });
 
-        // attribute::update(endpoint_id, TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id, &val); });
-
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(5000));
     }
 }
 
