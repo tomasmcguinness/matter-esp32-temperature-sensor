@@ -21,6 +21,8 @@
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 
+#include <math.h>
+
 static const char *TAG = "app_main";
 
 using namespace esp_matter;
@@ -39,7 +41,12 @@ using namespace chip::app::Clusters;
         }                                          \
     } while (0)
 
-#define ADC1_CHANNEL          ADC_CHANNEL_0
+#define ADC1_CHANNEL ADC_CHANNEL_0
+
+#define THERMISTORNOMINAL 10000
+#define TEMPERATURENOMINAL 25
+#define BCOEFFICIENT 3977
+#define SERIESRESISTOR 10000
 
 adc_oneshot_unit_handle_t adc1_handle;
 adc_cali_handle_t adc1_cali_chan0_handle = NULL;
@@ -56,10 +63,22 @@ void read_temperature(void *pvParameters)
         ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, ADC1_CHANNEL, &adc_raw));
         ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, ADC1_CHANNEL, adc_raw);
 
-        int voltage;
+        int voltage_mv;
 
-        ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_chan0_handle, adc_raw, &voltage));
-        ESP_LOGI(TAG, "ADC%d Channel[%d] Cali Voltage: %d mV", ADC_UNIT_1 + 1, ADC1_CHANNEL, voltage);
+        ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_chan0_handle, adc_raw, &voltage_mv));
+        ESP_LOGI(TAG, "ADC%d Channel[%d] Cali Voltage: %d mV", ADC_UNIT_1 + 1, ADC1_CHANNEL, voltage_mv);
+
+        float resistance = (voltage_mv * SERIESRESISTOR) / (3300 - voltage_mv);
+
+        double steinhart;
+        steinhart = resistance / THERMISTORNOMINAL;       // (R/Ro)
+        steinhart = log(steinhart);                       // ln(R/Ro)
+        steinhart /= BCOEFFICIENT;                        // 1/B * ln(R/Ro)
+        steinhart += 1.0 / (TEMPERATURENOMINAL + 273.15); // + (1/To)
+        steinhart = 1.0 / steinhart;                      // Invert
+        steinhart -= 273.15;                              // Convert to Celcius
+
+        ESP_LOGI(TAG, "Temperature: %f", steinhart);
 
         // Convert the voltage into temperature
 
