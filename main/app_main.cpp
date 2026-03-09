@@ -45,7 +45,7 @@ using namespace chip::app::Clusters;
 
 #define THERMISTORNOMINAL 10000
 #define TEMPERATURENOMINAL 25
-#define BCOEFFICIENT 3977
+#define BCOEFFICIENT 3969
 #define SERIESRESISTOR 10000
 
 adc_oneshot_unit_handle_t adc1_handle;
@@ -74,25 +74,27 @@ void read_temperature(void *pvParameters)
 
         double temperature;
         temperature = resistance / THERMISTORNOMINAL;       // (R/Ro)
-        temperature = log(temperature);                       // ln(R/Ro)
+        temperature = log(temperature);                     // ln(R/Ro)
         temperature /= BCOEFFICIENT;                        // 1/B * ln(R/Ro)
         temperature += 1.0 / (TEMPERATURENOMINAL + 273.15); // + (1/To)
-        temperature = 1.0 / temperature;                      // Invert
+        temperature = 1.0 / temperature;                    // Invert
         temperature -= 273.15;                              // Convert to Celcius
 
         ESP_LOGI(TAG, "Temperature: %f", temperature);
 
+        int16_t value = temperature * 100;
+
         // Schedule the attribute update so that we can report it from matter thread
 
-        chip::DeviceLayer::SystemLayer().ScheduleLambda([endpoint_id, voltage]()
-                                                         {
+        chip::DeviceLayer::SystemLayer().ScheduleLambda([endpoint_id, value]()
+                                                        {
         attribute_t * attribute = attribute::get(endpoint_id,
                                                  TemperatureMeasurement::Id,
                                                  TemperatureMeasurement::Attributes::MeasuredValue::Id);
 
         esp_matter_attr_val_t val = esp_matter_invalid(NULL);
         attribute::get_val(attribute, &val);
-        val.val.i16 = static_cast<int16_t>(temperature * 100);
+        val.val.i16 = static_cast<int16_t>(value);
         
         attribute::update(endpoint_id, TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id, &val); });
 
@@ -261,8 +263,8 @@ extern "C" void app_main()
 #endif
 
     /* Matter start */
-    // esp_err_t err = esp_matter::start(app_event_cb);
-    // ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "Failed to start Matter, err:%d", err));
+    esp_err_t err = esp_matter::start(app_event_cb);
+    ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "Failed to start Matter, err:%d", err));
 
     xTaskCreate(read_temperature, "ReadTemperature", 4096, NULL, 1, NULL);
 }
