@@ -21,6 +21,9 @@
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 
+#include "onewire_bus.h"
+#include "ds18b20.h"
+
 #include <math.h>
 
 static const char *TAG = "app_main";
@@ -41,62 +44,97 @@ using namespace chip::app::Clusters;
         }                                          \
     } while (0)
 
-#define ADC1_CHANNEL ADC_CHANNEL_0
+#define ADC1_CHANNEL_0 ADC_CHANNEL_0
+#define ADC1_CHANNEL_2 ADC_CHANNEL_2
 
 #define THERMISTORNOMINAL 10000
 #define TEMPERATURENOMINAL 25
 #define BCOEFFICIENT 3969
 #define SERIESRESISTOR 10000
 
+#define DS18B20_GPIO_NUM GPIO_NUM_10
+
 adc_oneshot_unit_handle_t adc1_handle;
 adc_cali_handle_t adc1_cali_chan0_handle = NULL;
+adc_cali_handle_t adc1_cali_chan2_handle = NULL;
 bool do_calibration1_chan0;
+bool do_calibration1_chan2;
+
+ds18b20_device_handle_t ds18b20_handle = NULL;
+
+static int16_t read_thermistor(adc_channel_t channel, adc_cali_handle_t cali_handle)
+{
+    int adc_raw;
+    ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, channel, &adc_raw));
+    ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, channel, adc_raw);
+
+    int voltage_mv;
+    ESP_ERROR_CHECK(adc_cali_raw_to_voltage(cali_handle, adc_raw, &voltage_mv));
+    ESP_LOGI(TAG, "ADC%d Channel[%d] Cali Voltage: %d mV", ADC_UNIT_1 + 1, channel, voltage_mv);
+
+    float resistance = (voltage_mv * SERIESRESISTOR) / (3300 - voltage_mv);
+
+    double temperature;
+    temperature = resistance / THERMISTORNOMINAL;       // (R/Ro)
+    temperature = log(temperature);                     // ln(R/Ro)
+    temperature /= BCOEFFICIENT;                        // 1/B * ln(R/Ro)
+    temperature += 1.0 / (TEMPERATURENOMINAL + 273.15); // + (1/To)
+    temperature = 1.0 / temperature;                    // Invert
+    temperature -= 273.15;                              // Convert to Celsius
+
+    ESP_LOGI(TAG, "Channel[%d] Temperature: %f", channel, temperature);
+    return static_cast<int16_t>(temperature * 100);
+}
+
+static int16_t read_ds18b20()
+{
+    esp_err_t err = ds18b20_trigger_temperature_conversion(ds18b20_handle);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "DS18B20 conversion failed: %d", err);
+        return INT16_MIN;
+    }
+
+    float temperature;
+    err = ds18b20_get_temperature(ds18b20_handle, &temperature);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "DS18B20 read failed: %d", err);
+        return INT16_MIN;
+    }
+
+    ESP_LOGI(TAG, "DS18B20 Temperature: %f", temperature);
+    return static_cast<int16_t>(temperature * 100);
+}
+
+static void update_endpoint_temperature(uint16_t endpoint_id, int16_t value)
+{
+    attribute_t *attr = attribute::get(endpoint_id, TemperatureMeasurement::Id,
+                                       TemperatureMeasurement::Attributes::MeasuredValue::Id);
+    esp_matter_attr_val_t val = esp_matter_invalid(NULL);
+    attribute::get_val(attr, &val);
+    val.val.i16 = value;
+    attribute::update(endpoint_id, TemperatureMeasurement::Id,
+                      TemperatureMeasurement::Attributes::MeasuredValue::Id, &val);
+}
 
 void read_temperature(void *pvParameters)
 {
     while (1)
     {
-        uint16_t endpoint_id = 1;
+        int16_t value0 = read_thermistor(ADC1_CHANNEL_0, adc1_cali_chan0_handle);
+        int16_t value2 = read_thermistor(ADC1_CHANNEL_2, adc1_cali_chan2_handle);
+        int16_t value_ds18b20 = read_ds18b20();
 
-        int adc_raw;
-
-        ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, ADC1_CHANNEL, &adc_raw));
-        ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, ADC1_CHANNEL, adc_raw);
-
-        int voltage_mv;
-
-        ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_chan0_handle, adc_raw, &voltage_mv));
-        ESP_LOGI(TAG, "ADC%d Channel[%d] Cali Voltage: %d mV", ADC_UNIT_1 + 1, ADC1_CHANNEL, voltage_mv);
-
-        // Convert the voltage into temperature using Steinhart formula
-
-        float resistance = (voltage_mv * SERIESRESISTOR) / (3300 - voltage_mv);
-
-        double temperature;
-        temperature = resistance / THERMISTORNOMINAL;       // (R/Ro)
-        temperature = log(temperature);                     // ln(R/Ro)
-        temperature /= BCOEFFICIENT;                        // 1/B * ln(R/Ro)
-        temperature += 1.0 / (TEMPERATURENOMINAL + 273.15); // + (1/To)
-        temperature = 1.0 / temperature;                    // Invert
-        temperature -= 273.15;                              // Convert to Celcius
-
-        ESP_LOGI(TAG, "Temperature: %f", temperature);
-
-        int16_t value = temperature * 100;
-
-        // Schedule the attribute update so that we can report it from matter thread
-
-        chip::DeviceLayer::SystemLayer().ScheduleLambda([endpoint_id, value]()
-                                                        {
-        attribute_t * attribute = attribute::get(endpoint_id,
-                                                 TemperatureMeasurement::Id,
-                                                 TemperatureMeasurement::Attributes::MeasuredValue::Id);
-
-        esp_matter_attr_val_t val = esp_matter_invalid(NULL);
-        attribute::get_val(attribute, &val);
-        val.val.i16 = static_cast<int16_t>(value);
-        
-        attribute::update(endpoint_id, TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id, &val); });
+        chip::DeviceLayer::SystemLayer().ScheduleLambda([value0, value2, value_ds18b20]()
+        {
+            update_endpoint_temperature(1, value0);
+            update_endpoint_temperature(2, value2);
+            if (value_ds18b20 != INT16_MIN)
+            {
+                update_endpoint_temperature(3, value_ds18b20);
+            }
+        });
 
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
@@ -238,19 +276,54 @@ extern "C" void app_main()
         .atten = ADC_ATTEN_DB_12,
         .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC1_CHANNEL, &adc_config));
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC1_CHANNEL_0, &adc_config));
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC1_CHANNEL_2, &adc_config));
 
-    do_calibration1_chan0 = adc_calibration_init(ADC_UNIT_1, ADC1_CHANNEL, ADC_ATTEN_DB_12, &adc1_cali_chan0_handle);
+    do_calibration1_chan0 = adc_calibration_init(ADC_UNIT_1, ADC1_CHANNEL_0, ADC_ATTEN_DB_12, &adc1_cali_chan0_handle);
+    do_calibration1_chan2 = adc_calibration_init(ADC_UNIT_1, ADC1_CHANNEL_2, ADC_ATTEN_DB_12, &adc1_cali_chan2_handle);
+
+    /* Setup the DS18B20 1-Wire sensor */
+    onewire_bus_handle_t onewire_bus;
+    onewire_bus_config_t onewire_bus_config = {
+        .bus_gpio_num = DS18B20_GPIO_NUM,
+    };
+    onewire_bus_rmt_config_t onewire_rmt_config = {
+        .max_rx_bytes = 10,
+    };
+    ESP_ERROR_CHECK(onewire_new_bus_rmt(&onewire_bus_config, &onewire_rmt_config, &onewire_bus));
+
+    onewire_device_iter_handle_t iter;
+    ESP_ERROR_CHECK(onewire_new_device_iter(onewire_bus, &iter));
+    onewire_device_t onewire_device;
+    if (onewire_device_iter_get_next(iter, &onewire_device) == ESP_OK)
+    {
+        ds18b20_config_t ds18b20_cfg = {};
+        ESP_ERROR_CHECK(ds18b20_new_device(&onewire_device, &ds18b20_cfg, &ds18b20_handle));
+        ESP_LOGI(TAG, "DS18B20 found and initialised");
+    }
+    else
+    {
+        ESP_LOGW(TAG, "No DS18B20 found on 1-Wire bus");
+    }
+    ESP_ERROR_CHECK(onewire_del_device_iter(iter));
 
     /* Create a Matter node and add the mandatory Root Node device type on endpoint 0 */
     node::config_t node_config;
     node_t *node = node::create(&node_config, app_attribute_update_cb, app_identification_cb);
     ABORT_APP_ON_FAILURE(node != nullptr, ESP_LOGE(TAG, "Failed to create Matter node"));
 
-    // add temperature sensor device
+    // add temperature sensor endpoints (Channel 0 on ep1, Channel 2 on ep2)
     temperature_sensor::config_t temp_sensor_config;
     endpoint_t *temp_sensor_ep = temperature_sensor::create(node, &temp_sensor_config, ENDPOINT_FLAG_NONE, NULL);
-    ABORT_APP_ON_FAILURE(temp_sensor_ep != nullptr, ESP_LOGE(TAG, "Failed to create temperature_sensor endpoint"));
+    ABORT_APP_ON_FAILURE(temp_sensor_ep != nullptr, ESP_LOGE(TAG, "Failed to create temperature_sensor endpoint 1"));
+
+    temperature_sensor::config_t temp_sensor_config2;
+    endpoint_t *temp_sensor_ep2 = temperature_sensor::create(node, &temp_sensor_config2, ENDPOINT_FLAG_NONE, NULL);
+    ABORT_APP_ON_FAILURE(temp_sensor_ep2 != nullptr, ESP_LOGE(TAG, "Failed to create temperature_sensor endpoint 2"));
+
+    temperature_sensor::config_t temp_sensor_config3;
+    endpoint_t *temp_sensor_ep3 = temperature_sensor::create(node, &temp_sensor_config3, ENDPOINT_FLAG_NONE, NULL);
+    ABORT_APP_ON_FAILURE(temp_sensor_ep3 != nullptr, ESP_LOGE(TAG, "Failed to create temperature_sensor endpoint 3"));
 
 #if CHIP_DEVICE_CONFIG_ENABLE_THREAD
     /* Set OpenThread platform config */
