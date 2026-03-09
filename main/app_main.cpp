@@ -298,7 +298,7 @@ extern "C" void app_main()
     if (onewire_device_iter_get_next(iter, &onewire_device) == ESP_OK)
     {
         ds18b20_config_t ds18b20_cfg = {};
-        ESP_ERROR_CHECK(ds18b20_new_device(&onewire_device, &ds18b20_cfg, &ds18b20_handle));
+        ESP_ERROR_CHECK(ds18b20_new_device_from_enumeration(&onewire_device, &ds18b20_cfg, &ds18b20_handle));
         ESP_LOGI(TAG, "DS18B20 found and initialised");
     }
     else
