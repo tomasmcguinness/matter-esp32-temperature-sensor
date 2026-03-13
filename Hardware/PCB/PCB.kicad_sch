@@ -4347,7 +4347,7 @@
 	)
 	(global_label "GPIO4"
 		(shape input)
-		(at 236.22 123.19 0)
+		(at 236.22 123.19 90)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -4357,7 +4357,7 @@
 		)
 		(uuid "2e7cdb06-495a-4d7c-99ae-882a05e05802")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 244.89 123.19 0)
+			(at 236.22 114.52 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5678,7 +5678,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Connector_USB:USB_C_Receptacle_GCT_USB4110"
+		(property "Footprint" "Connector_USB:USB_C_Receptacle_GCT_USB4105-xx-A_16P_TopMnt_Horizontal"
 			(at 38.1 95.25 0)
 			(effects
 				(font
