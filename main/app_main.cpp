@@ -44,15 +44,18 @@ using namespace chip::app::Clusters;
         }                                          \
     } while (0)
 
-#define ADC1_CHANNEL_0 ADC_CHANNEL_0
-#define ADC1_CHANNEL_2 ADC_CHANNEL_2
+#define ADC_22_CLAMP ADC_CHANNEL_4
+#define ADC_ADJUSTABLE_CLAMP ADC_CHANNEL_5
 
 #define THERMISTORNOMINAL 10000
 #define TEMPERATURENOMINAL 25
-#define BCOEFFICIENT 3969
+
+#define BCOEFFICIENT_22_CLAMP 3969
+#define BCOEFFICIENT_ADJUSTABLE_CLAMP 3977
+
 #define SERIESRESISTOR 10000
 
-#define DS18B20_GPIO_NUM GPIO_NUM_10
+#define DS18B20_GPIO_NUM GPIO_NUM_15
 
 adc_oneshot_unit_handle_t adc1_handle;
 adc_cali_handle_t adc1_cali_chan0_handle = NULL;
@@ -62,7 +65,7 @@ bool do_calibration1_chan2;
 
 ds18b20_device_handle_t ds18b20_handle = NULL;
 
-static int16_t read_thermistor(adc_channel_t channel, adc_cali_handle_t cali_handle)
+static int16_t read_thermistor(adc_channel_t channel, adc_cali_handle_t cali_handle, int b_coefficient)
 {
     int adc_raw;
     ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, channel, &adc_raw));
@@ -72,12 +75,12 @@ static int16_t read_thermistor(adc_channel_t channel, adc_cali_handle_t cali_han
     ESP_ERROR_CHECK(adc_cali_raw_to_voltage(cali_handle, adc_raw, &voltage_mv));
     ESP_LOGI(TAG, "ADC%d Channel[%d] Cali Voltage: %d mV", ADC_UNIT_1 + 1, channel, voltage_mv);
 
-    float resistance = (voltage_mv * SERIESRESISTOR) / (3300 - voltage_mv);
+    float resistance = SERIESRESISTOR * (3300.0f - voltage_mv) / voltage_mv;
 
     double temperature;
     temperature = resistance / THERMISTORNOMINAL;       // (R/Ro)
     temperature = log(temperature);                     // ln(R/Ro)
-    temperature /= BCOEFFICIENT;                        // 1/B * ln(R/Ro)
+    temperature /= b_coefficient;                       // 1/B * ln(R/Ro)
     temperature += 1.0 / (TEMPERATURENOMINAL + 273.15); // + (1/To)
     temperature = 1.0 / temperature;                    // Invert
     temperature -= 273.15;                              // Convert to Celsius
@@ -122,21 +125,21 @@ void read_temperature(void *pvParameters)
 {
     while (1)
     {
-        int16_t value0 = read_thermistor(ADC1_CHANNEL_0, adc1_cali_chan0_handle);
-        int16_t value2 = read_thermistor(ADC1_CHANNEL_2, adc1_cali_chan2_handle);
+        int16_t temp_22_clamp = read_thermistor(ADC_22_CLAMP, adc1_cali_chan0_handle, BCOEFFICIENT_22_CLAMP);
+        int16_t temp_adjustable_clamp = read_thermistor(ADC_ADJUSTABLE_CLAMP, adc1_cali_chan2_handle, BCOEFFICIENT_ADJUSTABLE_CLAMP);
         int16_t value_ds18b20 = read_ds18b20();
 
-        chip::DeviceLayer::SystemLayer().ScheduleLambda([value0, value2, value_ds18b20]()
+        chip::DeviceLayer::SystemLayer().ScheduleLambda([temp_22_clamp, temp_adjustable_clamp, value_ds18b20]()
         {
-            update_endpoint_temperature(1, value0);
-            update_endpoint_temperature(2, value2);
+            update_endpoint_temperature(1, temp_22_clamp);
+            update_endpoint_temperature(2, temp_adjustable_clamp);
             if (value_ds18b20 != INT16_MIN)
             {
                 update_endpoint_temperature(3, value_ds18b20);
             }
         });
 
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
@@ -276,11 +279,11 @@ extern "C" void app_main()
         .atten = ADC_ATTEN_DB_12,
         .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC1_CHANNEL_0, &adc_config));
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC1_CHANNEL_2, &adc_config));
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC_22_CLAMP, &adc_config));
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC_ADJUSTABLE_CLAMP, &adc_config));
 
-    do_calibration1_chan0 = adc_calibration_init(ADC_UNIT_1, ADC1_CHANNEL_0, ADC_ATTEN_DB_12, &adc1_cali_chan0_handle);
-    do_calibration1_chan2 = adc_calibration_init(ADC_UNIT_1, ADC1_CHANNEL_2, ADC_ATTEN_DB_12, &adc1_cali_chan2_handle);
+    do_calibration1_chan0 = adc_calibration_init(ADC_UNIT_1, ADC_22_CLAMP, ADC_ATTEN_DB_12, &adc1_cali_chan0_handle);
+    do_calibration1_chan2 = adc_calibration_init(ADC_UNIT_1, ADC_ADJUSTABLE_CLAMP, ADC_ATTEN_DB_12, &adc1_cali_chan2_handle);
 
     /* Setup the DS18B20 1-Wire sensor */
     onewire_bus_handle_t onewire_bus;
